@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { countryToRegion, languageToDefaultCountry } from "./lib/headers";
-import { signRegion, verifyRegion } from "./lib/crypto";
+import { countryToRegion, languageToDefaultCountry } from "@/lib/headers";
+import { signRegion, verifyRegion } from "@/lib/edgeCrypto"; // <-- Edge-safe
 
 export const config = {
   matcher: [
@@ -24,7 +24,6 @@ function detectCountryFromHeaders(req: NextRequest): string | null {
   }
   return null;
 }
-
 function detectLangFromAcceptLanguage(req: NextRequest): string | null {
   const al = req.headers.get("accept-language");
   if (!al) return null;
@@ -36,25 +35,26 @@ function detectLangFromAcceptLanguage(req: NextRequest): string | null {
 const DEFAULT_REGION = "US";
 const DEFAULT_LANG = "en";
 
-export function middleware(req: NextRequest) {
+export async function middleware(req: NextRequest) {
+  // <-- async
   const res = NextResponse.next();
   const c = req.cookies;
 
   const headerCountry = detectCountryFromHeaders(req) || undefined;
   const acceptLang = detectLangFromAcceptLanguage(req) || undefined;
 
-  // 1) Região "fonte da verdade": HEADER > token assinado > fallback por lang > default
+  // token httpOnly (assinado)
   const token = c.get("region_token")?.value;
-  const verified = verifyRegion(token);
+  const verified = await verifyRegion(token); // <-- await
   const regionByHeader = countryToRegion(headerCountry);
   const regionByLang = countryToRegion(languageToDefaultCountry(acceptLang));
 
   const serverRegion =
     regionByHeader || verified?.region || regionByLang || DEFAULT_REGION;
 
-  // 2) Se o token não existir ou divergir, reemite token httpOnly
+  // reemite token se ausente/divergente
   if (!verified || verified.region !== serverRegion) {
-    const newToken = signRegion({
+    const newToken = await signRegion({
       region: serverRegion,
       ts: Math.floor(Date.now() / 1000),
     });
@@ -65,11 +65,11 @@ export function middleware(req: NextRequest) {
       sameSite: "lax",
       secure: true,
       path: "/",
-      maxAge: 60 * 60 * 24, // 1 dia
+      maxAge: 60 * 60 * 24,
     });
   }
 
-  // 3) Sempre sobrescreve o espelho legível (UX) — impede “enganar” a UI
+  // espelho legível (UI) — reescrito sempre
   res.cookies.set({
     name: "region",
     value: serverRegion,
@@ -80,7 +80,6 @@ export function middleware(req: NextRequest) {
     maxAge: 60 * 60 * 24,
   });
 
-  // 4) Idioma: preferência do usuário se existir, senão Accept-Language, senão en
   const existingLang = c.get("lang")?.value;
   const lang = existingLang || acceptLang || DEFAULT_LANG;
   res.cookies.set({
@@ -93,7 +92,6 @@ export function middleware(req: NextRequest) {
     maxAge: 60 * 60 * 24 * 365,
   });
 
-  // 5) Currency por região (apenas UX)
   const currency = mapRegionToCurrency(serverRegion);
   res.cookies.set({
     name: "currency",

@@ -1,7 +1,6 @@
-// context/LocaleProvider.tsx
 "use client";
 
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useState } from "react";
 
 export type LocaleCtx = {
   lang: string;
@@ -17,29 +16,21 @@ const LocaleContext = createContext<LocaleCtx>({
   currency: "USD",
 });
 
-function readCookie(name: string) {
-  if (typeof document === "undefined") return null;
-  const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
-  return m ? decodeURIComponent(m[1]) : null;
-}
+type Props = {
+  initial: { lang: string; region: string; currency: string };
+  children: React.ReactNode;
+};
 
-export const LocaleProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
-  const [lang, setLangState] = useState("en");
-  const [region, setRegion] = useState("US");
-  const [currency, setCurrency] = useState("USD");
-
-  useEffect(() => {
-    setLangState(readCookie("lang") ?? "en");
-    setRegion(readCookie("region") ?? "US");
-    setCurrency(readCookie("currency") ?? "USD");
-  }, []);
+export const LocaleProvider: React.FC<Props> = ({ initial, children }) => {
+  // já entra com o valor do SSR → sem flash
+  const [lang, setLangState] = useState(initial.lang);
+  const region = initial.region;
+  const currency = initial.currency;
 
   const setLang = (l: string) => {
     document.cookie = `lang=${encodeURIComponent(l)}; path=/; max-age=${
       60 * 60 * 24 * 365
-    }`;
+    }; samesite=lax`;
     setLangState(l);
   };
 

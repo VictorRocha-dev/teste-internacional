@@ -51,6 +51,6 @@ export function regionToLocale(region: string): string {
   const r = region.toUpperCase();
   if (r === "BR") return "pt-BR";
   if (r === "US") return "en-US";
-  if (r === "EU") return "de-DE"; // qualquer locale europeu serve para EUR
+  if (r === "EU") return "de-DE";
   return "en-US";
 }

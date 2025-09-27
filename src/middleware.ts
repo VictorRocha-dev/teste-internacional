@@ -1,7 +1,7 @@
-// middleware.ts
 import { NextResponse, type NextRequest } from "next/server";
+import { countryToRegion, languageToDefaultCountry } from "./lib/headers";
+import { signRegion, verifyRegion } from "./lib/crypto";
 
-// NÃO exporte runtime aqui
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
@@ -9,18 +9,18 @@ export const config = {
 };
 
 const COUNTRY_HEADER_CANDIDATES = [
-  "x-vercel-ip-country", // Vercel
-  "cf-ipcountry", // Cloudflare
-  "x-nf-country", // Netlify
-  "fastly-country-code", // Fastly
-  "x-geoip-country", // genérico
-  "x-country-code", // genérico
+  "x-vercel-ip-country",
+  "cf-ipcountry",
+  "x-nf-country",
+  "fastly-country-code",
+  "x-geoip-country",
+  "x-country-code",
 ];
 
 function detectCountryFromHeaders(req: NextRequest): string | null {
   for (const h of COUNTRY_HEADER_CANDIDATES) {
-    const val = req.headers.get(h);
-    if (val) return val.toUpperCase();
+    const v = req.headers.get(h);
+    if (v) return v.toUpperCase();
   }
   return null;
 }
@@ -38,63 +38,100 @@ const DEFAULT_LANG = "en";
 
 export function middleware(req: NextRequest) {
   const res = NextResponse.next();
-  const cookies = req.cookies;
-
-  const existingRegion = cookies.get("region")?.value;
-  const existingLang = cookies.get("lang")?.value;
+  const c = req.cookies;
 
   const headerCountry = detectCountryFromHeaders(req) || undefined;
   const acceptLang = detectLangFromAcceptLanguage(req) || undefined;
 
-  const region = existingRegion ?? headerCountry ?? DEFAULT_REGION;
-  const lang = existingLang ?? acceptLang ?? DEFAULT_LANG;
+  // 1) Região "fonte da verdade": HEADER > token assinado > fallback por lang > default
+  const token = c.get("region_token")?.value;
+  const verified = verifyRegion(token);
+  const regionByHeader = countryToRegion(headerCountry);
+  const regionByLang = countryToRegion(languageToDefaultCountry(acceptLang));
 
-  const currency = mapCountryToCurrency(region);
+  const serverRegion =
+    regionByHeader || verified?.region || regionByLang || DEFAULT_REGION;
 
-  setCookie(res, "region", region);
-  setCookie(res, "lang", lang);
-  setCookie(res, "currency", currency);
+  // 2) Se o token não existir ou divergir, reemite token httpOnly
+  if (!verified || verified.region !== serverRegion) {
+    const newToken = signRegion({
+      region: serverRegion,
+      ts: Math.floor(Date.now() / 1000),
+    });
+    res.cookies.set({
+      name: "region_token",
+      value: newToken,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: true,
+      path: "/",
+      maxAge: 60 * 60 * 24, // 1 dia
+    });
+  }
+
+  // 3) Sempre sobrescreve o espelho legível (UX) — impede “enganar” a UI
+  res.cookies.set({
+    name: "region",
+    value: serverRegion,
+    httpOnly: false,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: 60 * 60 * 24,
+  });
+
+  // 4) Idioma: preferência do usuário se existir, senão Accept-Language, senão en
+  const existingLang = c.get("lang")?.value;
+  const lang = existingLang || acceptLang || DEFAULT_LANG;
+  res.cookies.set({
+    name: "lang",
+    value: lang,
+    httpOnly: false,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
+
+  // 5) Currency por região (apenas UX)
+  const currency = mapRegionToCurrency(serverRegion);
+  res.cookies.set({
+    name: "currency",
+    value: currency,
+    httpOnly: false,
+    sameSite: "lax",
+    secure: true,
+    path: "/",
+    maxAge: 60 * 60 * 24,
+  });
 
   return res;
 }
 
-function mapCountryToCurrency(countryCode: string) {
-  const cc = (countryCode || "").toUpperCase();
-  if (cc === "BR") return "BRL";
-  if (
-    [
-      "FR",
-      "DE",
-      "IT",
-      "ES",
-      "PT",
-      "NL",
-      "BE",
-      "IE",
-      "AT",
-      "FI",
-      "GR",
-      "LU",
-      "MT",
-      "SI",
-      "SK",
-      "EE",
-      "LV",
-      "LT",
-    ].includes(cc)
-  ) {
-    return "EUR";
-  }
+function mapRegionToCurrency(region: string) {
+  const r = region.toUpperCase();
+  if (r === "BR") return "BRL";
+  if (r === "EU") return "EUR";
+  const eu = [
+    "FR",
+    "DE",
+    "IT",
+    "ES",
+    "PT",
+    "NL",
+    "BE",
+    "IE",
+    "AT",
+    "FI",
+    "GR",
+    "LU",
+    "MT",
+    "SI",
+    "SK",
+    "EE",
+    "LV",
+    "LT",
+  ];
+  if (eu.includes(r)) return "EUR";
   return "USD";
-}
-
-function setCookie(res: NextResponse, name: string, value: string) {
-  res.cookies.set({
-    name,
-    value,
-    path: "/",
-    httpOnly: false,
-    sameSite: "lax",
-    maxAge: 60 * 60 * 24 * 30,
-  });
 }
